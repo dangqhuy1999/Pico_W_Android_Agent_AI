@@ -436,7 +436,15 @@ class ApiService {
             // BƯỚC SỬA LỖI: Thêm -y để ghi đè file đã có
             // Bước 2: Chạy FFmpegKit để giải mã từ tệp tạm thời và lưu vào một tệp tạm thời khác
             decodedTempFile = File.createTempFile("tts_audio_output", ".wav")
-            val arguments = arrayOf("-y", "-i", ttsTempFile.absolutePath, "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", decodedTempFile.absolutePath)
+            val arguments = arrayOf(
+                "-y",
+                "-i", ttsTempFile.absolutePath,
+                "-f", "s16le",          // 16-bit PCM
+                "-acodec", "pcm_s16le", // xuất raw PCM 16-bit
+                "-ar", "16000",         // 16 kHz sample rate (đủ cho giọng nói)
+                "-ac", "2",             // stereo (2 channel) để khớp config Pico hiện tại
+                decodedTempFile.absolutePath
+            )
             val session = FFmpegKit.executeWithArguments(arguments)
 
             // Bước 3: Kết nối TCP và gửi dữ liệu từ tệp đã giải mã
@@ -445,9 +453,20 @@ class ApiService {
                 Socket(PICO_W_HOST, portAsInt).use { socket ->
                     Log.d("PicoTTSApp", "Đã kết nối thành công tới Pico W TCP Server.")
                     val outputStream: OutputStream = socket.getOutputStream()
-                    decodedTempFile.inputStream().use { inputStream ->
-                        inputStream.copyTo(outputStream)
+                    decodedTempFile.inputStream().use { input ->
+                        val out = socket.getOutputStream()
+                        val chunk = ByteArray(640) // ~10ms audio @16kHz S16 stereo
+                        val bytesPerSecond = 16000 * 2 * 2 // 64kB/s
+                        val chunkDurationMs = (chunk.size * 1000L) / bytesPerSecond
+
+                        var n: Int
+                        while (input.read(chunk).also { n = it } > 0) {
+                            out.write(chunk, 0, n)
+                            out.flush()
+                            Thread.sleep(chunkDurationMs) // pace theo tốc độ phát
+                        }
                     }
+
                     Log.d("PicoTTSApp", "Hoàn tất việc truyền dữ liệu âm thanh.")
                 }
             } else {
