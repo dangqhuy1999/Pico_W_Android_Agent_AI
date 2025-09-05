@@ -21,4 +21,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "AI_AGENT_v1"
 include(":app")
- 
