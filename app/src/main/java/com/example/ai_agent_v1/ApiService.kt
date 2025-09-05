@@ -1,8 +1,6 @@
 package com.example.ai_agent_v1
 
 import android.util.Log
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import java.io.IOException
 import java.io.OutputStream
 import java.net.Socket
@@ -14,6 +12,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.delay
 import okhttp3.Call
 import okhttp3.Callback
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegSession
+import com.arthenica.ffmpegkit.ReturnCode
+
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -280,197 +282,97 @@ class ApiService {
 
 
     // Cả hai hàm đều cần chạy bất đồng bộ, nên chúng ta sẽ chuyển logic sang một luồng riêng
-// và gọi chúng từ AudioViewModel
+    // và gọi chúng từ AudioViewModel
 
-    /**
+    /*
      * Gửi dữ liệu âm thanh theo luồng tới Pico W.
      * Hàm này sẽ nhận các gói dữ liệu (bytes) và gửi chúng ngay lập tức.
      */
-    suspend fun sendAudioStreamToPicoW(audioDataChunk: ByteArray) {
-        val requestBody = audioDataChunk.toRequestBody("audio/mpeg".toMediaTypeOrNull(), 0, audioDataChunk.size)
-        val request = Request.Builder()
-            .url("TEST")
-            .post(requestBody)
-            .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Lỗi khi gửi dữ liệu tới Pico W: ${response.code}")
-            }
-        }
-    }
-
-    /**
+    /*
      * Gửi yêu cầu tới API TTS và xử lý phản hồi theo luồng.
      * Nó sẽ đọc từng gói dữ liệu nhỏ và gửi ngay lập tức đến Pico W.
+
      */
-    suspend fun streamTtsAudioToPicoW_(text: String) {
-        val json = JSONObject().apply {
-            put("model", "gpt-4o-mini-tts")
-            put("input", text)
-            put("voice", "coral")
-            put("instructions", "Speak in a cheerful and positive tone.")
-        }
-
-        val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-
-        val request = Request.Builder()
-            .url(TEXT_TO_SPEECH_API)
-            .header("Authorization", "Bearer $OPENAI_API_KEY")
-            .post(requestBody)
-            .build()
-
-        // Sử dụng newCall().execute() để có được một luồng phản hồi
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Lỗi Text-to-Speech API: ${response.code} - ${response.body?.string()}")
-            }
-
-            // Đọc dữ liệu từ luồng (stream) phản hồi
-            val source = response.body?.source() ?: throw IOException("Không nhận được dữ liệu âm thanh từ TTS API")
-            val buffer = source.buffer()
-            val bufferSize = 4096 // Kích thước mỗi gói dữ liệu (chunk)
-
-            while (!buffer.exhausted()) {
-                val chunk = ByteArray(bufferSize)
-                val bytesRead = buffer.read(chunk, 0, chunk.size)
-                if (bytesRead > 0) {
-                    // Gửi ngay lập tức gói dữ liệu nhỏ này tới Pico W
-                    sendAudioStreamToPicoW(chunk.copyOf(bytesRead))
-                }
-            }
-        }
-    }
 
     suspend fun streamTtsAudioToPicoW(text: String) = withContext(Dispatchers.IO) {
-        val json = JSONObject().apply {
-            put("model", "gpt-4o-mini-tts")
-            put("input", text)
-            put("voice", "coral")
-            put("instructions", "Speak in a cheerful and positive tone.")
-        }
-        val requestBody = json.toString().toRequestBody("application/json".toMediaTypeOrNull())
+        var ttsTempFile: File? = null
+        var decodedTempFile: File? = null
 
-        val request = Request.Builder()
-            .url(TEXT_TO_SPEECH_API)
-            .header("Authorization", "Bearer $OPENAI_API_KEY")
-            .post(requestBody)
-            .build()
-
-        // Bước 1 & 2: Gọi API và khởi chạy FFmpeg
-        client.newCall(request).execute().use { ttsResponse ->
-            if (!ttsResponse.isSuccessful) {
-                throw IOException("Lỗi TTS API: ${ttsResponse.code} - ${ttsResponse.body?.string()}")
+        try {
+            // Bước 1: Gọi API TTS và lưu dữ liệu vào tệp tạm thời
+            ttsTempFile = File.createTempFile("tts_audio_input", ".mp3")
+            val json = JSONObject().apply {
+                put("model", "gpt-4o-mini-tts")
+                put("input", text)
+                put("voice", "coral")
+                put("instructions", "Speak in a cheerful and positive tone.")
             }
-            val ttsInputStream = ttsResponse.body?.byteStream() ?: throw IOException("Không nhận được dữ liệu âm thanh")
+            val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url(TEXT_TO_SPEECH_API)
+                .header("Authorization", "Bearer $OPENAI_API_KEY")
+                .post(requestBody)
+                .build()
 
-            val session = FFmpegKit.execute(
-                "-i -", // Đầu vào là luồng từ TTS API
-                "-f s16le",
-                "-ar 44100",
-                "-ac 2",
-                "pipe:1" // Đầu ra tới luồng stdout
+            client.newCall(request).execute().use { ttsResponse ->
+                if (!ttsResponse.isSuccessful) {
+                    val errorBody = ttsResponse.body?.string() ?: "Unknown error"
+                    throw IOException("Lỗi TTS API: ${ttsResponse.code} - $errorBody")
+                }
+                ttsResponse.body?.byteStream()?.use { input ->
+                    ttsTempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: throw IOException("Không nhận được dữ liệu âm thanh")
+            }
+
+            // BƯỚC SỬA LỖI: Thêm -y để ghi đè file đã có
+            // Bước 2: Chạy FFmpegKit để giải mã từ tệp tạm thời và lưu vào một tệp tạm thời khác
+            decodedTempFile = File.createTempFile("tts_audio_output", ".wav")
+            val arguments = arrayOf(
+                "-y",
+                "-i", ttsTempFile.absolutePath,
+                "-f", "s16le",          // 16-bit PCM
+                "-acodec", "pcm_s16le", // xuất raw PCM 16-bit
+                "-ar", "16000",         // 16 kHz sample rate (đủ cho giọng nói)
+                "-ac", "2",             // stereo (2 channel) để khớp config Pico hiện tại
+                decodedTempFile.absolutePath
             )
+            val session = FFmpegKit.executeWithArguments(arguments)
 
-            val ffmpegStdin = session.ffmpegInputStream
-            val ffmpegStdout = session.ffmpegOutputStream
-            val buffer = ByteArray(4096)
-
-            try {
-                // Gửi dữ liệu TTS vào stdin của FFmpegKit
-                while (ttsInputStream.read(buffer).also { bytesRead ->
-                        if (bytesRead > 0) {
-                            ffmpegStdin.write(buffer, 0, bytesRead)
-                        }
-                    } != -1) {}
-                ffmpegStdin.flush()
-            } finally {
-                ffmpegStdin.close() // Đóng luồng stdin của FFmpeg
-            }
-
-            // Bước 3: Kết nối TCP và gửi luồng đã được giải mã
-            try {
+            // Bước 3: Kết nối TCP và gửi dữ liệu từ tệp đã giải mã
+            if (ReturnCode.isSuccess(session.returnCode)) {
                 val portAsInt = PICO_W_PORT.toInt()
                 Socket(PICO_W_HOST, portAsInt).use { socket ->
                     Log.d("PicoTTSApp", "Đã kết nối thành công tới Pico W TCP Server.")
                     val outputStream: OutputStream = socket.getOutputStream()
+                    decodedTempFile.inputStream().use { input ->
+                        val out = socket.getOutputStream()
+                        val chunk = ByteArray(640) // ~10ms audio @16kHz S16 stereo
+                        val bytesPerSecond = 16000 * 2 * 2 // 64kB/s
+                        val chunkDurationMs = (chunk.size * 1000L) / bytesPerSecond
 
-                    // Gửi dữ liệu từ stdout của FFmpeg tới socket
-                    while (ffmpegStdout.read(buffer).also { bytesRead ->
-                            if (bytesRead > 0) {
-                                outputStream.write(buffer, 0, bytesRead)
-                                outputStream.flush()
-                            }
-                        } != -1) {}
-                    Log.d("PicoTTSApp", "Hoàn tất việc truyền dữ liệu âm thanh.")
-                }
-            } catch (e: Exception) {
-                Log.e("PicoTTSApp", "Lỗi khi truyền dữ liệu: ${e.message}")
-            } finally {
-                ffmpegStdout.close() // Đóng luồng stdout của FFmpeg
-                session.waitForCompletion()
-                if (!ReturnCode.isSuccess(session.returnCode)) {
-                    Log.e("PicoTTSApp", "Lỗi FFmpeg: ${session.failStackTrace}")
-                }
-            }
-        }
-    }
-    /*
-    suspend fun streamTtsAudioToPicoW(text: String) {
-        // Bước 1: Gọi API TTS để nhận luồng dữ liệu
-        val json = JSONObject().apply {
-            put("model", "gpt-4o-mini-tts")
-            put("input", text)
-            put("voice", "coral")
-            put("instructions", "Speak in a cheerful and positive tone.")
-        }
-
-        val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-
-        val request = Request.Builder()
-            .url(TEXT_TO_SPEECH_API)
-            .header("Authorization", "Bearer $OPENAI_API_KEY")
-            .post(requestBody)
-            .build()
-
-        client.newCall(request).execute().use { ttsResponse ->
-            if (!ttsResponse.isSuccessful) {
-                throw IOException("Lỗi Text-to-Speech API: ${ttsResponse.code} - ${ttsResponse.body?.string()}")
-            }
-
-            // Lấy luồng dữ liệu thô từ TTS API
-            val ttsInputStream = ttsResponse.body?.byteStream() ?: throw IOException("Không nhận được dữ liệu âm thanh từ TTS API")
-
-            // Bước 2: Mở một kết nối TCP duy nhất đến Pico W
-            try {
-                val portAsInt = PICO_W_PORT.toInt()
-
-                Socket(PICO_W_HOST, portAsInt).use { socket ->
-                    println("Đã kết nối thành công tới Pico W TCP Server.")
-                    val outputStream: OutputStream = socket.getOutputStream()
-
-                    // Bước 3: Đọc dữ liệu từ luồng TTS và ghi trực tiếp vào socket
-                    val bufferSize = 4096 // Kích thước mỗi gói dữ liệu (chunk)
-                    val chunk = ByteArray(bufferSize)
-                    var bytesRead: Int
-
-                    while (ttsInputStream.read(chunk).also { bytesRead = it } != -1) {
-                        if (bytesRead > 0) {
-                            outputStream.write(chunk, 0, bytesRead)
-                            outputStream.flush() // Quan trọng: Đẩy dữ liệu đi ngay lập tức
+                        var n: Int
+                        while (input.read(chunk).also { n = it } > 0) {
+                            out.write(chunk, 0, n)
+                            out.flush()
+                            Thread.sleep(chunkDurationMs) // pace theo tốc độ phát
                         }
                     }
 
-                    outputStream.flush()
-                    println("Hoàn tất việc truyền dữ liệu âm thanh tới Pico W.")
-                } // Khối 'use' tự động đóng socket
-            } catch (e: Exception) {
-                throw IOException("Lỗi khi truyền dữ liệu tới Pico W: ${e.message}")
-            } finally {
-                // Đảm bảo luồng đầu vào từ TTS API cũng được đóng
-                ttsInputStream.close()
+                    Log.d("PicoTTSApp", "Hoàn tất việc truyền dữ liệu âm thanh.")
+                }
+            } else {
+                val allLogs = session.getLogsAsString()
+                Log.e("PicoTTSApp", "Lỗi FFmpeg: ${session.failStackTrace}")
+                Log.e("PicoTTSApp", "Chi tiết Log FFmpeg: $allLogs")
             }
+        } catch (e: Exception) {
+            Log.e("PicoTTSApp", "Lỗi khi truyền dữ liệu: ${e.message}", e)
+        } finally {
+            ttsTempFile?.delete()
+            decodedTempFile?.delete()
         }
     }
-    */
 }

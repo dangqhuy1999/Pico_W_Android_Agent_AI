@@ -116,6 +116,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/ffmpeg-kit.aar"))
     implementation("com.arthenica:smart-exception-java:0.2.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
