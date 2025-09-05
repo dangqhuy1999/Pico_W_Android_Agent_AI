@@ -117,22 +117,14 @@ class AudioViewModel : ViewModel() {
 
                     // Bước 3: Gửi câu trả lời của AI tới API Text-to-Speech
                     // Chuyển sang luồng I/O để thực hiện tác vụ mạng
-                    val ttsAudio = withContext(Dispatchers.IO) {
-                        apiService.getTtsAudio(aiText)
-                    }
 
-                    // Cập nhật trạng thái trên luồng chính
-                    statusMessage = "Đã có file âm thanh, đang gửi tới Pico W..."
-
-                    // Bước 4: Gửi file âm thanh đã hoàn chỉnh tới Pico W
-                    // Chuyển sang luồng I/O để thực hiện tác vụ mạng
+                    statusMessage = "Đang truyền phát âm thanh tới Pico W..."
                     withContext(Dispatchers.IO) {
-                        apiService.sendAudioToPicoW(ttsAudio)
+                        apiService.streamTtsAudioToPicoW(aiText)
                     }
-
                     // Cập nhật trạng thái hoàn tất trên luồng chính
                     withContext(Dispatchers.Main) {
-                        statusMessage = "Hoàn tất! Pico W đang phát âm thanh."
+                        statusMessage = "Hoàn tất! Pico W đã nhận và đang phát âm thanh."
                     }
                 } catch (e: Exception) {
                     // Xử lý ngoại lệ và hiển thị thông báo lỗi trên luồng chính

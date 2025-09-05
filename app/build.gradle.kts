@@ -72,15 +72,22 @@ android {
             "OPENAI_API_KEY",
             properties.getProperty("OPENAI_API_KEY", "default_value")
         )
-        buildConfigField(
-            "String",
-            "PICO_W_IP",
-            properties.getProperty("PICO_W_IP", "default_value")
-        )
+        /*
         buildConfigField(
             "String",
             "PICO_W_URL",
             properties.getProperty("PICO_W_URL", "default_value")
+        )
+        */
+        buildConfigField(
+            "String",
+            "PICO_W_HOST",
+            properties.getProperty("PICO_W_HOST", "default_value")
+        )
+        buildConfigField(
+            "String",
+            "PICO_W_PORT",
+            properties.getProperty("PICO_W_PORT", "default_value")
         )
     }
 
@@ -109,6 +116,7 @@ android {
 }
 
 dependencies {
+    implementation("com.arthenica:smart-exception-java:0.2.1")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
     implementation("androidx.activity:activity-compose:1.9.0")
