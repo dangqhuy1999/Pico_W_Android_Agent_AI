@@ -333,10 +333,10 @@ class ApiService {
             val arguments = arrayOf(
                 "-y",
                 "-i", ttsTempFile.absolutePath,
-                "-f", "s16le",          // 16-bit PCM
-                "-acodec", "pcm_s16le", // xuất raw PCM 16-bit
-                "-ar", "16000",         // 16 kHz sample rate (đủ cho giọng nói)
-                "-ac", "2",             // stereo (2 channel) để khớp config Pico hiện tại
+                "-f", "s32le", // Thay đổi từ 16-bit sang 32-bit
+                "-acodec", "pcm_s32le", // Thay đổi codec PCM
+                "-ar", "16000",         // 16 kHz sample rate
+                "-ac", "2",             // stereo (2 channel)
                 decodedTempFile.absolutePath
             )
             val session = FFmpegKit.executeWithArguments(arguments)
@@ -349,8 +349,10 @@ class ApiService {
                     val outputStream: OutputStream = socket.getOutputStream()
                     decodedTempFile.inputStream().use { input ->
                         val out = socket.getOutputStream()
-                        val chunk = ByteArray(640) // ~10ms audio @16kHz S16 stereo
-                        val bytesPerSecond = 16000 * 2 * 2 // 64kB/s
+                        // Thay đổi kích thước chunk cho 32-bit (640 * 2 = 1280 bytes)
+                        val chunk = ByteArray(1280) // ~10ms audio @16kHz S32 stereo
+                        // Thay đổi tốc độ byte cho 32-bit
+                        val bytesPerSecond = 16000 * 4 * 2 // 128kB/s
                         val chunkDurationMs = (chunk.size * 1000L) / bytesPerSecond
 
                         var n: Int
